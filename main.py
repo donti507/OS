@@ -71,8 +71,32 @@ class DiskScheduler:
         self.plot_movements("SSTF", movements, total_movement)
         return movements, total_movement
 
+    # def scan(self) -> Tuple[List[int], int]:
+    #     """SCAN (Elevator) scheduling"""
+    #     movements = [self.current_position]
+    #     total_movement = 0
+    #     current_pos = self.current_position
+    #     remaining_requests = sorted(self.requests, key=lambda x: x.track)
+
+    #     greater = [r for r in remaining_requests if r.track >= current_pos]
+    #     lesser = [r for r in remaining_requests if r.track < current_pos]
+
+    #     for request in greater:
+    #         pos = request.track
+    #         movements.append(pos)
+    #         total_movement += self.calculate_seek_time(current_pos, pos)
+    #         current_pos = pos
+
+    #     for request in reversed(lesser):
+    #         pos = request.track
+    #         movements.append(pos)
+    #         total_movement += self.calculate_seek_time(current_pos, pos)
+    #         current_pos = pos
+
+    #     self.plot_movements("SCAN", movements, total_movement)
+    #     return movements, total_movement
     def scan(self) -> Tuple[List[int], int]:
-        """SCAN (Elevator) scheduling"""
+        """Left-first SCAN (Elevator) scheduling"""
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
@@ -81,19 +105,27 @@ class DiskScheduler:
         greater = [r for r in remaining_requests if r.track >= current_pos]
         lesser = [r for r in remaining_requests if r.track < current_pos]
 
+        # Move left first (toward 0)
+        for request in reversed(lesser):  # highest to lowest
+            pos = request.track
+            movements.append(pos)
+            total_movement += self.calculate_seek_time(current_pos, pos)
+            current_pos = pos
+
+        # If head is not already at track 0, go to 0 (end of disk in left direction)
+        if current_pos != 0:
+            movements.append(0)
+            total_movement += self.calculate_seek_time(current_pos, 0)
+            current_pos = 0
+
+        # Then move right (start of greater list)
         for request in greater:
             pos = request.track
             movements.append(pos)
             total_movement += self.calculate_seek_time(current_pos, pos)
             current_pos = pos
 
-        for request in reversed(lesser):
-            pos = request.track
-            movements.append(pos)
-            total_movement += self.calculate_seek_time(current_pos, pos)
-            current_pos = pos
-
-        self.plot_movements("SCAN", movements, total_movement)
+        self.plot_movements("SCAN (Left-first)", movements, total_movement)
         return movements, total_movement
 
     def c_scan(self) -> Tuple[List[int], int]:
@@ -103,9 +135,11 @@ class DiskScheduler:
         current_pos = self.current_position
         remaining_requests = sorted(self.requests, key=lambda x: x.track)
 
+        # Separate requests into those greater than or equal to the current position and those less than it
         greater = [r for r in remaining_requests if r.track >= current_pos]
         lesser = [r for r in remaining_requests if r.track < current_pos]
 
+        # Move to the right (greater than or equal to the current position)
         for request in greater:
             pos = request.track
             movements.append(pos)
@@ -113,15 +147,20 @@ class DiskScheduler:
             current_pos = pos
 
         if lesser:
+            # Move to the end of disk
+            movements.append(self.total_tracks - 1)
+            total_movement += self.calculate_seek_time(current_pos, self.total_tracks - 1)
+
+            # Move to beginning of disk (this movement is not counted in C-SCAN)
             movements.append(0)
-            total_movement += self.calculate_seek_time(current_pos, 0)
             current_pos = 0
 
-        for request in lesser:
-            pos = request.track
-            movements.append(pos)
-            total_movement += self.calculate_seek_time(current_pos, pos)
-            current_pos = pos
+            # Serve the remaining requests (less than the initial position)
+            for request in lesser:
+                pos = request.track
+                movements.append(pos)
+                total_movement += self.calculate_seek_time(current_pos, pos)
+                current_pos = pos
 
         self.plot_movements("C-SCAN", movements, total_movement)
         return movements, total_movement
