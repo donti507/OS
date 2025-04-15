@@ -12,21 +12,20 @@ class DiskRequest:
 class DiskScheduler:
     def __init__(self, total_tracks: int = 200):
         self.total_tracks = total_tracks
-        self.current_position = 53  # Set the initial head position at 53
+        self.current_position = 53
         self.requests = []
 
-    def calculate_seek_time(self, from_track, to_track):
-        """Calculate the seek time (absolute distance) between two tracks"""
+    def calculate_seek_time(self, from_track, to_track): # we calculated the seek time here
         return abs(to_track - from_track)
 
-    def plot_movements(self, algorithm_name: str, movements: List[int], total_movement: int):
-        """Plot the head movements for visualization, showing arrows for movement"""
-        plt.figure(figsize=(12, 8))  # Increased figure size for better visibility with more data points
 
-        # Plot head movement as blue circles and connecting lines
+
+# this code is for visualize
+    def plot_movements(self, algorithm_name: str, movements: List[int], total_movement: int):
+
+        plt.figure(figsize=(12, 8))
         plt.plot(range(len(movements)), movements, 'b-o', label="Track Visited")
 
-        # Add arrows to indicate head movement direction
         for i in range(1, len(movements)):
             plt.arrow(i - 1, movements[i - 1], 0.8, movements[i] - movements[i - 1],
                       head_width=0.3, head_length=3, fc='red', ec='red', length_includes_head=True)
@@ -38,8 +37,10 @@ class DiskScheduler:
         plt.legend()
         plt.show()
 
+
+
     def fcfs(self) -> Tuple[List[int], int]:
-        """First Come First Serve scheduling"""
+
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
@@ -53,8 +54,10 @@ class DiskScheduler:
         self.plot_movements("FCFS", movements, total_movement)
         return movements, total_movement
 
+
+
     def sstf(self) -> Tuple[List[int], int]:
-        """Shortest Seek Time First scheduling"""
+
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
@@ -71,8 +74,10 @@ class DiskScheduler:
         self.plot_movements("SSTF", movements, total_movement)
         return movements, total_movement
 
+
+
     def scan(self) -> Tuple[List[int], int]:
-        """Left-first SCAN (Elevator) scheduling"""
+
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
@@ -81,21 +86,21 @@ class DiskScheduler:
         greater = [r for r in remaining_requests if r.track >= current_pos]
         lesser = [r for r in remaining_requests if r.track < current_pos]
 
-        # Move left first (toward 0)
-        for request in reversed(lesser):  # highest to lowest
+        # i have used reversed here to move to the left zero and starting the pointing again
+        for request in reversed(lesser):
             pos = request.track
             movements.append(pos)
             total_movement += self.calculate_seek_time(current_pos, pos)
             current_pos = pos
 
-        # If head is not already at track 0, go to 0 (end of disk in left direction)
+        # if it didnt find zero then go to the end of the track
         if current_pos != 0:
             movements.append(0)
             total_movement += self.calculate_seek_time(current_pos, 0)
             current_pos = 0
 
-        # Then move right (start of greater list)
-        for request in greater:
+
+        for request in greater:  #now to the greater value again
             pos = request.track
             movements.append(pos)
             total_movement += self.calculate_seek_time(current_pos, pos)
@@ -104,38 +109,37 @@ class DiskScheduler:
         self.plot_movements("SCAN (Left-first)", movements, total_movement)
         return movements, total_movement
 
+
+
     def c_scan(self) -> Tuple[List[int], int]:
-        """C-SCAN scheduling (corrected for tracks 0–200)"""
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
         remaining_requests = sorted(self.requests, key=lambda x: x.track)
 
-        # Separate requests into ≥ current_pos and < current_pos
+# here making the requests separate
         greater = [r for r in remaining_requests if r.track >= current_pos]
         lesser = [r for r in remaining_requests if r.track < current_pos]
 
-        # Move right (≥ current_pos)
-        for request in greater:
+
+        for request in greater:   ##here its greater, so it moves to right
             pos = request.track
             movements.append(pos)
             total_movement += abs(current_pos - pos)
             current_pos = pos
 
         if lesser:
-            # Move to end of disk (200, not 199!)
-            end_track = 200  # Key change: Last track is 200, not 199
+            end_track = 200
             movements.append(end_track)
             total_movement += abs(current_pos - end_track)
             current_pos = end_track
 
-            # Wrap to start (0) and count full distance (200)
             movements.append(0)
             total_movement += abs(current_pos - 0)  # Adds 200, not 199
             current_pos = 0
 
-            # Move right (< initial position)
-            for request in lesser:
+
+            for request in lesser:  #moving to right if its smaller than the initial point 53
                 pos = request.track
                 movements.append(pos)
                 total_movement += abs(current_pos - pos)
@@ -144,16 +148,19 @@ class DiskScheduler:
         self.plot_movements("C-SCAN", movements, total_movement)
         return movements, total_movement
 
+
+
+
     def edf(self) -> Tuple[List[int], int]:
-        """Earliest Deadline First scheduling (corrected)"""
+
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
         remaining_requests = self.requests.copy()
 
-        # Phase 1: Serve requests in EDF order (greedy by deadline)
+
         while remaining_requests:
-            # Find request with earliest deadline
+
             next_request = min(remaining_requests, key=lambda x: x.deadline)
             pos = next_request.track
             movements.append(pos)
@@ -164,8 +171,10 @@ class DiskScheduler:
         self.plot_movements("EDF (Corrected)", movements, total_movement)
         return movements, total_movement
 
+
+
     def fd_scan(self) -> Tuple[List[int], int]:
-        """Feasible Deadline SCAN scheduling"""
+
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
@@ -192,12 +201,16 @@ class DiskScheduler:
         return movements, total_movement
 
 
-# Example usage
+
+
+
+
+
+
+
 def main():
-    # Create a disk scheduler with a specific initial head position at 53
     scheduler = DiskScheduler(200)
 
-    # Define the request queue with 20 readings and their deadlines
     scheduler.requests = [
         DiskRequest(98, deadline=25),
         DiskRequest(183, deadline=30),
@@ -221,7 +234,7 @@ def main():
         DiskRequest(78, deadline=120)
     ]
 
-    # Test each algorithm with visualization
+
     print("FCFS:")
     movement, sequence = scheduler.fcfs()
     print(f"Total head movement: {sequence} tracks\n")
