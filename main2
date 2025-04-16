@@ -7,6 +7,7 @@ class DiskRequest:
         self.track = track
         self.arrival_time = arrival_time
         self.deadline = deadline
+        self.waiting_time = 0
 
 
 class DiskScheduler:
@@ -15,14 +16,10 @@ class DiskScheduler:
         self.current_position = 53
         self.requests = []
 
-    def calculate_seek_time(self, from_track, to_track): # we calculated the seek time here
+    def calculate_seek_time(self, from_track, to_track):
         return abs(to_track - from_track)
 
-
-
-# this code is for visualize
     def plot_movements(self, algorithm_name: str, movements: List[int], total_movement: int):
-
         plt.figure(figsize=(12, 8))
         plt.plot(range(len(movements)), movements, 'b-o', label="Track Visited")
 
@@ -37,10 +34,11 @@ class DiskScheduler:
         plt.legend()
         plt.show()
 
-
+    def calculate_average_waiting_time(self):
+        total_waiting_time = sum(request.waiting_time for request in self.requests)
+        return total_waiting_time / len(self.requests)
 
     def fcfs(self) -> Tuple[List[int], int]:
-
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
@@ -51,13 +49,14 @@ class DiskScheduler:
             total_movement += self.calculate_seek_time(current_pos, pos)
             current_pos = pos
 
+            request.waiting_time = total_movement - request.arrival_time - self.calculate_seek_time(current_pos, pos)
+
         self.plot_movements("FCFS", movements, total_movement)
+        avg_waiting_time = self.calculate_average_waiting_time()
+        print(f"Average Waiting Time for FCFS: {avg_waiting_time} units")
         return movements, total_movement
 
-
-
     def sstf(self) -> Tuple[List[int], int]:
-
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
@@ -71,13 +70,15 @@ class DiskScheduler:
             current_pos = pos
             remaining_requests.remove(closest)
 
+            # its the waiting time
+            closest.waiting_time = total_movement - closest.arrival_time - self.calculate_seek_time(current_pos, pos)
+
         self.plot_movements("SSTF", movements, total_movement)
+        avg_waiting_time = self.calculate_average_waiting_time()
+        print(f"Average Waiting Time for SSTF: {avg_waiting_time} units")
         return movements, total_movement
 
-
-
     def scan(self) -> Tuple[List[int], int]:
-
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
@@ -85,31 +86,30 @@ class DiskScheduler:
 
         greater = [r for r in remaining_requests if r.track >= current_pos]
         lesser = [r for r in remaining_requests if r.track < current_pos]
-
         # i have used reversed here to move to the left zero and starting the pointing again
         for request in reversed(lesser):
             pos = request.track
             movements.append(pos)
             total_movement += self.calculate_seek_time(current_pos, pos)
             current_pos = pos
-
+            request.waiting_time = total_movement - request.arrival_time - self.calculate_seek_time(current_pos, pos)
         # if it didnt find zero then go to the end of the track
         if current_pos != 0:
             movements.append(0)
             total_movement += self.calculate_seek_time(current_pos, 0)
             current_pos = 0
 
-
-        for request in greater:  #now to the greater value again
+        for request in greater:
             pos = request.track
             movements.append(pos)
             total_movement += self.calculate_seek_time(current_pos, pos)
             current_pos = pos
+            request.waiting_time = total_movement - request.arrival_time - self.calculate_seek_time(current_pos, pos)
 
         self.plot_movements("SCAN (Left-first)", movements, total_movement)
+        avg_waiting_time = self.calculate_average_waiting_time()
+        print(f"Average Waiting Time for SCAN: {avg_waiting_time} units")
         return movements, total_movement
-
-
 
     def c_scan(self) -> Tuple[List[int], int]:
         movements = [self.current_position]
@@ -117,16 +117,15 @@ class DiskScheduler:
         current_pos = self.current_position
         remaining_requests = sorted(self.requests, key=lambda x: x.track)
 
-# here making the requests separate
         greater = [r for r in remaining_requests if r.track >= current_pos]
         lesser = [r for r in remaining_requests if r.track < current_pos]
 
-
-        for request in greater:   ##here its greater, so it moves to right
+        for request in greater:
             pos = request.track
             movements.append(pos)
             total_movement += abs(current_pos - pos)
             current_pos = pos
+            request.waiting_time = total_movement - request.arrival_time - abs(current_pos - pos)
 
         if lesser:
             end_track = 200
@@ -135,46 +134,42 @@ class DiskScheduler:
             current_pos = end_track
 
             movements.append(0)
-            total_movement += abs(current_pos - 0)  # Adds 200, not 199
+            total_movement += abs(current_pos - 0)
             current_pos = 0
 
-
-            for request in lesser:  #moving to right if its smaller than the initial point 53
+            for request in lesser:
                 pos = request.track
                 movements.append(pos)
                 total_movement += abs(current_pos - pos)
                 current_pos = pos
+                request.waiting_time = total_movement - request.arrival_time - abs(current_pos - pos)
 
         self.plot_movements("C-SCAN", movements, total_movement)
+        avg_waiting_time = self.calculate_average_waiting_time()
+        print(f"Average Waiting Time for C-SCAN: {avg_waiting_time} units")
         return movements, total_movement
 
-
-
-
     def edf(self) -> Tuple[List[int], int]:
-
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
         remaining_requests = self.requests.copy()
 
-
         while remaining_requests:
-
             next_request = min(remaining_requests, key=lambda x: x.deadline)
             pos = next_request.track
             movements.append(pos)
             total_movement += self.calculate_seek_time(current_pos, pos)
             current_pos = pos
             remaining_requests.remove(next_request)
+            next_request.waiting_time = total_movement - next_request.arrival_time - self.calculate_seek_time(current_pos, pos)
 
         self.plot_movements("EDF (Corrected)", movements, total_movement)
+        avg_waiting_time = self.calculate_average_waiting_time()
+        print(f"Average Waiting Time for EDF: {avg_waiting_time} units")
         return movements, total_movement
 
-
-
     def fd_scan(self) -> Tuple[List[int], int]:
-
         movements = [self.current_position]
         total_movement = 0
         current_pos = self.current_position
@@ -191,21 +186,18 @@ class DiskScheduler:
             movements.append(request.track)
             total_movement += self.calculate_seek_time(current_pos, request.track)
             current_pos = request.track
+            request.waiting_time = total_movement - request.arrival_time - self.calculate_seek_time(current_pos, request.track)
 
         for request in reversed(lesser):
             movements.append(request.track)
             total_movement += self.calculate_seek_time(current_pos, request.track)
             current_pos = request.track
+            request.waiting_time = total_movement - request.arrival_time - self.calculate_seek_time(current_pos, request.track)
 
         self.plot_movements("FD-SCAN", movements, total_movement)
+        avg_waiting_time = self.calculate_average_waiting_time()
+        print(f"Average Waiting Time for FD-SCAN: {avg_waiting_time} units")
         return movements, total_movement
-
-
-
-
-
-
-
 
 
 def main():
@@ -231,9 +223,91 @@ def main():
         DiskRequest(169, deadline=105),
         DiskRequest(56, deadline=110),
         DiskRequest(143, deadline=115),
-        DiskRequest(78, deadline=120)
+        DiskRequest(78, deadline=120),
+        DiskRequest(101, deadline=125),
+        DiskRequest(36, deadline=130),
+        DiskRequest(185, deadline=135),
+        DiskRequest(62, deadline=140),
+        DiskRequest(150, deadline=145),
+        DiskRequest(13, deadline=150),
+        DiskRequest(90, deadline=155),
+        DiskRequest(123, deadline=160),
+        DiskRequest(48, deadline=165),
+        DiskRequest(171, deadline=170),
+        DiskRequest(6, deadline=175),
+        DiskRequest(134, deadline=180),
+        DiskRequest(88, deadline=185),
+        DiskRequest(158, deadline=190),
+        DiskRequest(21, deadline=195),
+        DiskRequest(111, deadline=200),
+        DiskRequest(44, deadline=205),
+        DiskRequest(182, deadline=210),
+        DiskRequest(30, deadline=215),
+        DiskRequest(97, deadline=220),
+        DiskRequest(118, deadline=225),
+        DiskRequest(70, deadline=230),
+        DiskRequest(160, deadline=235),
+        DiskRequest(12, deadline=240),
+        DiskRequest(119, deadline=245),
+        DiskRequest(35, deadline=250),
+        DiskRequest(191, deadline=255),
+        DiskRequest(74, deadline=260),
+        DiskRequest(137, deadline=265),
+        DiskRequest(8, deadline=270),
+        DiskRequest(100, deadline=275),
+        DiskRequest(53, deadline=280),
+        DiskRequest(199, deadline=285),
+        DiskRequest(40, deadline=290),
+        DiskRequest(108, deadline=295),
+        DiskRequest(27, deadline=300),
+        DiskRequest(140, deadline=305),
+        DiskRequest(91, deadline=310),
+        DiskRequest(176, deadline=315),
+        DiskRequest(24, deadline=320),
+        DiskRequest(86, deadline=325),
+        DiskRequest(126, deadline=330),
+        DiskRequest(10, deadline=335),
+        DiskRequest(192, deadline=340),
+        DiskRequest(59, deadline=345),
+        DiskRequest(115, deadline=350),
+        DiskRequest(39, deadline=355),
+        DiskRequest(186, deadline=360),
+        DiskRequest(85, deadline=365),
+        DiskRequest(145, deadline=370),
+        DiskRequest(33, deadline=375),
+        DiskRequest(154, deadline=380),
+        DiskRequest(72, deadline=385),
+        DiskRequest(194, deadline=390),
+        DiskRequest(50, deadline=395),
+        DiskRequest(109, deadline=400),
+        DiskRequest(29, deadline=405),
+        DiskRequest(180, deadline=410),
+        DiskRequest(61, deadline=415),
+        DiskRequest(130, deadline=420),
+        DiskRequest(4, deadline=425),
+        DiskRequest(173, deadline=430),
+        DiskRequest(93, deadline=435),
+        DiskRequest(147, deadline=440),
+        DiskRequest(43, deadline=445),
+        DiskRequest(166, deadline=450),
+        DiskRequest(16, deadline=455),
+        DiskRequest(84, deadline=460),
+        DiskRequest(121, deadline=465),
+        DiskRequest(3, deadline=470),
+        DiskRequest(157, deadline=475),
+        DiskRequest(66, deadline=480),
+        DiskRequest(198, deadline=485),
+        DiskRequest(76, deadline=490),
+        DiskRequest(138, deadline=495),
+        DiskRequest(9, deadline=500),
+        DiskRequest(114, deadline=505),
+        DiskRequest(55, deadline=510),
+        DiskRequest(188, deadline=515),
+        DiskRequest(22, deadline=520),
+        DiskRequest(103, deadline=525),
+        DiskRequest(179, deadline=530),
+        DiskRequest(31, deadline=535)
     ]
-
 
     print("FCFS:")
     movement, sequence = scheduler.fcfs()
