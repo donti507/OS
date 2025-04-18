@@ -1,0 +1,134 @@
+import random
+
+class PageReplacement:
+    def __init__(self, num_pages, num_frames, ref_sequence):
+        self.num_pages = num_pages
+        self.num_frames = num_frames
+        self.ref_sequence = ref_sequence
+        self.memory = []
+        self.page_faults = 0
+
+    def fifo(self):
+        self.memory = []
+        self.page_faults = 0
+        for page in self.ref_sequence:
+            if page not in self.memory:
+                self.page_faults += 1
+                if len(self.memory) < self.num_frames:
+                    self.memory.append(page)
+                else:
+                    self.memory.pop(0)
+                    self.memory.append(page)
+        return self.page_faults
+
+    def opt(self):
+        self.memory = []
+        self.page_faults = 0
+        for i, page in enumerate(self.ref_sequence):
+            if page not in self.memory:
+                self.page_faults += 1
+                if len(self.memory) < self.num_frames:
+                    self.memory.append(page)
+                else:
+                    farthest_use = -1
+                    page_to_replace = -1
+                    for mem_page in self.memory:
+                        try:
+                            next_use = self.ref_sequence[i+1:].index(mem_page)
+                        except ValueError:
+                            next_use = float('inf')
+                        if next_use > farthest_use:
+                            farthest_use = next_use
+                            page_to_replace = mem_page
+                    self.memory.remove(page_to_replace)
+                    self.memory.append(page)
+        return self.page_faults
+
+    def lru(self):
+        self.memory = []
+        self.page_faults = 0
+        recent_usage = {}
+        for i, page in enumerate(self.ref_sequence):
+            if page not in self.memory:
+                self.page_faults += 1
+                if len(self.memory) < self.num_frames:
+                    self.memory.append(page)
+                else:
+                    least_recently_used = min(self.memory, key=lambda x: recent_usage[x])
+                    self.memory.remove(least_recently_used)
+                    self.memory.append(page)
+            recent_usage[page] = i
+        return self.page_faults
+
+    def approximated_lru(self):
+        self.memory = []
+        self.page_faults = 0
+        ref_bits = {i: 0 for i in range(self.num_pages)}
+        queue = []
+        for page in self.ref_sequence:
+            if page not in self.memory:
+                self.page_faults += 1
+                if len(self.memory) < self.num_frames:
+                    self.memory.append(page)
+                    queue.append(page)
+                    ref_bits[page] = 1
+                else:
+                    while True:
+                        candidate = queue.pop(0)
+                        if ref_bits[candidate] == 0:
+                            self.memory.remove(candidate)
+                            self.memory.append(page)
+                            queue.append(page)
+                            ref_bits[page] = 1
+                            break
+                        ref_bits[candidate] = 0
+                        queue.append(candidate)
+            else:
+                ref_bits[page] = 1
+        return self.page_faults
+
+    def rand(self):
+        self.memory = []
+        self.page_faults = 0
+        for page in self.ref_sequence:
+            if page not in self.memory:
+                self.page_faults += 1
+                if len(self.memory) < self.num_frames:
+                    self.memory.append(page)
+                else:
+                    replace_page = random.choice(self.memory)
+                    self.memory.remove(replace_page)
+                    self.memory.append(page)
+        return self.page_faults
+
+def generate_page_reference_sequence(num_pages, locality_factor=0.5):
+    ref_sequence = []
+    for _ in range(1000):
+        if random.random() < locality_factor:
+            ref_sequence.append(random.randint(1, num_pages // 2))
+        else:
+            ref_sequence.append(random.randint(num_pages // 2, num_pages))
+    return ref_sequence
+
+# Simulation setup
+num_pages = 20
+num_frames = 4
+ref_sequence = generate_page_reference_sequence(num_pages)
+
+# Create PageReplacement object and test each algorithm
+page_replacement = PageReplacement(num_pages, num_frames, ref_sequence)
+
+fifo_faults = page_replacement.fifo()
+print(f"FIFO Page Faults: {fifo_faults}")
+
+opt_faults = page_replacement.opt()
+print(f"OPT Page Faults: {opt_faults}")
+
+lru_faults = page_replacement.lru()
+print(f"LRU Page Faults: {lru_faults}")
+
+approximated_lru_faults = page_replacement.approximated_lru()
+print(f"Approximated LRU Page Faults: {approximated_lru_faults}")
+
+rand_faults = page_replacement.rand()
+print(f"RAND Page Faults: {rand_faults}")
