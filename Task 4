@@ -1,0 +1,504 @@
+import random
+import numpy as np
+from collections import deque
+import matplotlib.pyplot as plt
+import copy
+
+# Re-use PageReferenceGenerator from Task 3
+class PageReferenceGenerator:
+    def __init__(self, num_pages, sequence_length, locality_factor=0.7, working_set_size=5):
+        self.num_pages = num_pages
+        self.sequence_length = sequence_length
+        self.locality_factor = locality_factor
+        self.working_set_size = min(working_set_size, num_pages)
+
+    def generate(self):
+        sequence = []
+        current_working_set = random.sample(range(self.num_pages), self.working_set_size)
+
+        for _ in range(self.sequence_length):
+            if random.random() < self.locality_factor:
+                page = random.choice(current_working_set)
+            else:
+                outside_pages = [p for p in range(self.num_pages) if p not in current_working_set]
+                if outside_pages:
+                    page = random.choice(outside_pages)
+                    current_working_set.remove(random.choice(current_working_set))
+                    current_working_set.append(page)
+                else:
+                    page = random.choice(current_working_set)
+
+            sequence.append(page)
+            if random.random() < 0.05:
+                current_working_set.remove(random.choice(current_working_set))
+                outside_pages = [p for p in range(self.num_pages) if p not in current_working_set]
+                if outside_pages:
+                    current_working_set.append(random.choice(outside_pages))
+                else:
+                    current_working_set.append(random.choice(range(self.num_pages)))
+
+        return sequence
+
+# Process class to model individual processes with their own page references
+class Process:
+    def __init__(self, pid, num_pages, reference_length, locality_factor=0.7, working_set_size=5):
+        self.pid = pid
+        self.num_pages = num_pages
+        self.reference_length = reference_length
+        self.locality_factor = locality_factor
+        self.working_set_size = working_set_size
+        self.page_references = None
+        self.current_position = 0
+        self.frames_allocated = 0
+        self.page_faults = 0
+        self.page_accesses = 0
+        self.last_fault_time = 0
+        self.fault_intervals = []
+        self.working_set = set()
+        self.reference_bits = {}
+        self.last_references = {}
+        self.resident_pages = set()
+        
+        # Generate page references for this process
+        self.generate_references()
+    
+    def generate_references(self):
+        generator = PageReferenceGenerator(
+            num_pages=self.num_pages,
+            sequence_length=self.reference_length,
+            locality_factor=self.locality_factor,
+            working_set_size=self.working_set_size
+        )
+        # Map page numbers to process-specific page IDs
+        self.page_references = [(self.pid, p) for p in generator.generate()]
+    
+    def next_reference(self):
+        if self.current_position < len(self.page_references):
+            reference = self.page_references[self.current_position]
+            self.current_position += 1
+            return reference
+        return None
+    
+    def reset(self):
+        self.current_position = 0
+        self.page_faults = 0
+        self.page_accesses = 0
+        self.last_fault_time = 0
+        self.fault_intervals = []
+        self.working_set = set()
+        self.reference_bits = {}
+        self.last_references = {}
+        self.resident_pages = set()
+    
+    def update_working_set(self, current_time, window_size):
+        # Update the working set based on recent references
+        self.working_set = {page for page, time in self.last_references.items() 
+                          if current_time - time <= window_size}
+        return len(self.working_set)
+
+    def record_reference(self, page, current_time):
+        self.page_accesses += 1
+        self.last_references[page] = current_time
+        self.reference_bits[page] = 1
+        
+        if page not in self.resident_pages:
+            self.page_faults += 1
+            self.fault_intervals.append(self.page_accesses - self.last_fault_time)
+            self.last_fault_time = self.page_accesses
+            return True  # Page fault occurred
+        return False  # No page fault
+
+    def update_resident_pages(self, pages):
+        self.resident_pages = set(pages)
+
+# LRU Page Replacement Algorithm
+class LRUPageReplacement:
+    def __init__(self, num_frames):
+        self.num_frames = num_frames
+        self.frames = []  # List of (pid, page) tuples
+        self.page_last_used = {}  # Dictionary mapping (pid, page) to last use time
+        self.time = 0
+    
+    def access_page(self, pid_page):
+        self.time += 1
+        pid, page = pid_page
+        
+        # Check if page is already in memory
+        if pid_page in self.frames:
+            self.page_last_used[pid_page] = self.time
+            return False  # No page fault
+        
+        # Page fault occurred
+        if len(self.frames) < self.num_frames:
+            # There's still room in the frames
+            self.frames.append(pid_page)
+            self.page_last_used[pid_page] = self.time
+        else:
+            # Need to replace a page using LRU
+            victim = min(self.frames, key=lambda x: self.page_last_used.get(x, 0))
+            self.frames.remove(victim)
+            self.frames.append(pid_page)
+            self.page_last_used[pid_page] = self.time
+        
+        return True  # Page fault occurred
+    
+    def reset(self):
+        self.frames = []
+        self.page_last_used = {}
+        self.time = 0
+
+# System class to manage processes and frame allocation
+class System:
+    def __init__(self, total_frames, num_processes, pages_per_process, references_per_process, 
+                 locality_factor=0.7, working_set_size=5, window_size=10):
+        self.total_frames = total_frames
+        self.processes = [Process(i, pages_per_process, references_per_process, 
+                                 locality_factor, working_set_size) 
+                          for i in range(num_processes)]
+        self.window_size = window_size
+        self.global_time = 0
+        
+        # Initialize LRU page replacement for each process
+        self.process_page_tables = {}
+        for proc in self.processes:
+            self.process_page_tables[proc.pid] = []
+    
+    def reset(self):
+        for proc in self.processes:
+            proc.reset()
+        self.global_time = 0
+        self.process_page_tables = {proc.pid: [] for proc in self.processes}
+
+    def generate_global_sequence(self):
+        """Generate global reference sequence by interleaving processes' references"""
+        all_references = []
+        
+        # Reset all processes
+        for proc in self.processes:
+            proc.reset()
+        
+        # Get all references from all processes
+        process_references = []
+        for proc in self.processes:
+            process_references.append(proc.page_references.copy())
+        
+        # Interleave references from different processes
+        while any(process_references):
+            # Select a random process that still has references
+            active_processes = [i for i, refs in enumerate(process_references) if refs]
+            if not active_processes:
+                break
+            
+            proc_idx = random.choice(active_processes)
+            # Take the next reference from the selected process
+            if process_references[proc_idx]:
+                all_references.append(process_references[proc_idx].pop(0))
+        
+        return all_references
+
+    def allocate_frames_equal(self):
+        """Allocate frames equally among processes"""
+        frames_per_process = self.total_frames // len(self.processes)
+        remainder = self.total_frames % len(self.processes)
+        
+        for i, proc in enumerate(self.processes):
+            # Distribute remainder frames to the first few processes
+            extra = 1 if i < remainder else 0
+            proc.frames_allocated = frames_per_process + extra
+    
+    def allocate_frames_proportional(self):
+        """Allocate frames proportionally based on process size"""
+        total_pages = sum(proc.num_pages for proc in self.processes)
+        
+        for proc in self.processes:
+            # Calculate proportional allocation
+            proportion = proc.num_pages / total_pages
+            frames = int(self.total_frames * proportion)
+            proc.frames_allocated = max(1, frames)  # Ensure at least one frame
+        
+        # Distribute any remaining frames
+        allocated = sum(proc.frames_allocated for proc in self.processes)
+        remainder = self.total_frames - allocated
+        
+        if remainder > 0:
+            # Sort processes by their page count to give extra frames to larger processes
+            sorted_procs = sorted(self.processes, key=lambda p: p.num_pages, reverse=True)
+            for i in range(remainder):
+                sorted_procs[i % len(sorted_procs)].frames_allocated += 1
+    
+    def allocate_frames_page_fault_frequency(self, reference_sequence):
+        """Allocate frames based on page fault frequency"""
+        # Start with equal allocation
+        self.allocate_frames_equal()
+        
+        # Set up LRU for each process
+        lru_replacers = {proc.pid: LRUPageReplacement(proc.frames_allocated) 
+                        for proc in self.processes}
+        
+        # Process the first portion of references to establish fault rates
+        sample_size = min(len(reference_sequence) // 4, 1000)
+        process_faults = {proc.pid: 0 for proc in self.processes}
+        
+        for i in range(sample_size):
+            if i >= len(reference_sequence):
+                break
+                
+            pid, page = reference_sequence[i]
+            fault = lru_replacers[pid].access_page((pid, page))
+            if fault:
+                process_faults[pid] += 1
+        
+        # Calculate fault rates
+        fault_rates = {pid: faults / sample_size for pid, faults in process_faults.items()}
+        
+        # Redistribute frames based on fault rates
+        total_fault_rate = sum(fault_rates.values())
+        if total_fault_rate > 0:
+            for proc in self.processes:
+                if total_fault_rate > 0:
+                    proportion = fault_rates[proc.pid] / total_fault_rate
+                    frames = max(1, int(self.total_frames * proportion))
+                    proc.frames_allocated = frames
+                else:
+                    # If no faults, allocate equally
+                    proc.frames_allocated = self.total_frames // len(self.processes)
+        
+        # Ensure all frames are allocated
+        allocated = sum(proc.frames_allocated for proc in self.processes)
+        if allocated < self.total_frames:
+            # Sort processes by fault rate to give extra frames to processes with higher fault rates
+            sorted_procs = sorted(self.processes, key=lambda p: fault_rates[p.pid], reverse=True)
+            for i in range(self.total_frames - allocated):
+                sorted_procs[i % len(sorted_procs)].frames_allocated += 1
+        elif allocated > self.total_frames:
+            # If we over-allocated, take frames from processes with lower fault rates
+            sorted_procs = sorted(self.processes, key=lambda p: fault_rates[p.pid])
+            excess = allocated - self.total_frames
+            for i in range(excess):
+                if sorted_procs[i % len(sorted_procs)].frames_allocated > 1:
+                    sorted_procs[i % len(sorted_procs)].frames_allocated -= 1
+    
+    def allocate_frames_working_set(self, reference_sequence):
+        """Allocate frames based on working set size"""
+        # Start with equal allocation
+        self.allocate_frames_equal()
+        
+        # Process a sample of references to establish working sets
+        sample_size = min(len(reference_sequence) // 4, 1000)
+        process_references = {proc.pid: {} for proc in self.processes}
+        
+        for i in range(sample_size):
+            if i >= len(reference_sequence):
+                break
+                
+            pid, page = reference_sequence[i]
+            process_references[pid][page] = i
+        
+        # Calculate working set sizes
+        working_set_sizes = {}
+        for pid, references in process_references.items():
+            # Count unique pages referenced within window_size
+            pages_in_window = set()
+            for page, time in references.items():
+                if sample_size - time <= self.window_size:
+                    pages_in_window.add(page)
+            working_set_sizes[pid] = len(pages_in_window)
+        
+        # Redistribute frames based on working set sizes
+        total_working_set = sum(working_set_sizes.values())
+        if total_working_set > 0:
+            for proc in self.processes:
+                proportion = working_set_sizes[proc.pid] / total_working_set
+                frames = max(1, int(self.total_frames * proportion))
+                proc.frames_allocated = frames
+        
+        # Ensure all frames are allocated
+        allocated = sum(proc.frames_allocated for proc in self.processes)
+        if allocated < self.total_frames:
+            # Sort processes by working set size
+            sorted_procs = sorted(self.processes, key=lambda p: working_set_sizes[p.pid], reverse=True)
+            for i in range(self.total_frames - allocated):
+                sorted_procs[i % len(sorted_procs)].frames_allocated += 1
+        elif allocated > self.total_frames:
+            # If we over-allocated, take frames from processes with smaller working sets
+            sorted_procs = sorted(self.processes, key=lambda p: working_set_sizes[p.pid])
+            excess = allocated - self.total_frames
+            for i in range(excess):
+                if sorted_procs[i % len(sorted_procs)].frames_allocated > 1:
+                    sorted_procs[i % len(sorted_procs)].frames_allocated -= 1
+    
+    def run_simulation(self, allocation_strategy):
+        """Run simulation with specified frame allocation strategy"""
+        self.reset()
+        
+        # Generate global reference sequence
+        global_sequence = self.generate_global_sequence()
+        
+        # Allocate frames using the specified strategy
+        if allocation_strategy == "equal":
+            self.allocate_frames_equal()
+        elif allocation_strategy == "proportional":
+            self.allocate_frames_proportional()
+        elif allocation_strategy == "page_fault_frequency":
+            self.allocate_frames_page_fault_frequency(global_sequence)
+        elif allocation_strategy == "working_set":
+            self.allocate_frames_working_set(global_sequence)
+        else:
+            raise ValueError(f"Unknown allocation strategy: {allocation_strategy}")
+        
+        # Create LRU page replacement for each process with its allocated frames
+        lru_replacers = {proc.pid: LRUPageReplacement(proc.frames_allocated) 
+                         for proc in self.processes}
+        
+        # Process the reference sequence
+        for pid, page in global_sequence:
+            # Find the process
+            process = next(p for p in self.processes if p.pid == pid)
+            
+            # Access the page using the process's LRU replacer
+            fault = lru_replacers[pid].access_page((pid, page))
+            
+            # Update the process's resident pages
+            process.update_resident_pages([p for (pid_, p) in lru_replacers[pid].frames if pid_ == pid])
+            
+            # Record the reference and whether it caused a fault
+            process.record_reference(page, self.global_time)
+            
+            self.global_time += 1
+        
+        # Calculate total page faults and other statistics
+        total_faults = sum(proc.page_faults for proc in self.processes)
+        total_references = sum(proc.page_accesses for proc in self.processes)
+        fault_rate = total_faults / total_references if total_references > 0 else 0
+        
+        return {
+            "allocation_strategy": allocation_strategy,
+            "total_frames": self.total_frames,
+            "total_faults": total_faults,
+            "total_references": total_references,
+            "fault_rate": fault_rate,
+            "processes": [{
+                "pid": proc.pid,
+                "frames_allocated": proc.frames_allocated,
+                "page_faults": proc.page_faults,
+                "page_accesses": proc.page_accesses,
+                "fault_rate": proc.page_faults / proc.page_accesses if proc.page_accesses > 0 else 0
+            } for proc in self.processes]
+        }
+
+def print_simulation_results(results):
+    """Print the results of a simulation"""
+    print(f"Allocation Strategy: {results['allocation_strategy'].replace('_', ' ').title()}")
+    print(f"Total Frames: {results['total_frames']}")
+    print(f"Total Page Faults: {results['total_faults']}")
+    print(f"Total References: {results['total_references']}")
+    print(f"Overall Fault Rate: {results['fault_rate']:.4f}")
+    print("\nProcess Statistics:")
+    print(f"{'PID':<5} {'Frames':<10} {'Page Faults':<15} {'References':<15} {'Fault Rate':<10}")
+    print("-" * 60)
+    
+    for proc in results['processes']:
+        print(f"{proc['pid']:<5} {proc['frames_allocated']:<10} {proc['page_faults']:<15} "
+              f"{proc['page_accesses']:<15} {proc['fault_rate']:.4f}")
+    print("\n")
+
+def plot_comparison(results_list):
+    """Plot comparison of different allocation strategies"""
+    strategies = [r['allocation_strategy'].replace('_', ' ').title() for r in results_list]
+    fault_rates = [r['fault_rate'] for r in results_list]
+    
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot overall fault rates
+    ax1.bar(strategies, fault_rates, color='skyblue')
+    ax1.set_title('Overall Page Fault Rate by Allocation Strategy')
+    ax1.set_ylabel('Fault Rate')
+    ax1.set_ylim(0, max(fault_rates) * 1.2)
+    
+    # Plot per-process fault rates
+    x = np.arange(len(results_list[0]['processes']))
+    width = 0.2
+    offsets = np.linspace(-width*1.5, width*1.5, len(results_list))
+    
+    for i, result in enumerate(results_list):
+        proc_fault_rates = [p['fault_rate'] for p in result['processes']]
+        ax2.bar(x + offsets[i], proc_fault_rates, width, 
+                label=strategies[i], alpha=0.7)
+    
+    ax2.set_title('Page Fault Rate by Process and Allocation Strategy')
+    ax2.set_xlabel('Process ID')
+    ax2.set_ylabel('Fault Rate')
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([p['pid'] for p in results_list[0]['processes']])
+    ax2.legend()
+    
+    plt.tight_layout()
+    plt.savefig('allocation_strategy_comparison.png')
+    plt.close()
+
+def plot_frame_distribution(results_list):
+    """Plot frame distribution among processes for different strategies"""
+    strategies = [r['allocation_strategy'].replace('_', ' ').title() for r in results_list]
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    x = np.arange(len(results_list[0]['processes']))
+    width = 0.2
+    offsets = np.linspace(-width*1.5, width*1.5, len(results_list))
+    
+    for i, result in enumerate(results_list):
+        frames = [p['frames_allocated'] for p in result['processes']]
+        ax.bar(x + offsets[i], frames, width, label=strategies[i], alpha=0.7)
+    
+    ax.set_title('Frame Allocation by Process and Strategy')
+    ax.set_xlabel('Process ID')
+    ax.set_ylabel('Number of Frames')
+    ax.set_xticks(x)
+    ax.set_xticklabels([p['pid'] for p in results_list[0]['processes']])
+    ax.legend()
+    
+    plt.tight_layout()
+    plt.savefig('frame_distribution.png')
+    plt.close()
+
+def main():
+    # Configuration
+    total_frames = 100
+    num_processes = 10
+    pages_per_process = 20
+    references_per_process = 300
+    locality_factor = 0.7
+    working_set_size = 5
+    window_size = 10
+    
+    # Create system
+    system = System(
+        total_frames=total_frames,
+        num_processes=num_processes,
+        pages_per_process=pages_per_process,
+        references_per_process=references_per_process,
+        locality_factor=locality_factor,
+        working_set_size=working_set_size,
+        window_size=window_size
+    )
+    
+    # Run simulations with different allocation strategies
+    strategies = ["equal", "proportional", "page_fault_frequency", "working_set"]
+    results_list = []
+    
+    for strategy in strategies:
+        print(f"\nRunning simulation with {strategy.replace('_', ' ')} allocation strategy...")
+        results = system.run_simulation(strategy)
+        results_list.append(results)
+        print_simulation_results(results)
+    
+    # Plot comparison of different strategies
+    plot_comparison(results_list)
+    plot_frame_distribution(results_list)
+    
+    print("Simulation complete. Results have been saved as 'allocation_strategy_comparison.png' and 'frame_distribution.png'.")
+
+if __name__ == "__main__":
+    main()
