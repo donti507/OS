@@ -1,0 +1,516 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Play, Pause, RotateCcw, Settings, BarChart3, Cpu, Network } from 'lucide-react';
+
+interface Task {
+  id: number;
+  processorRequirement: number;
+  originalProcessor: number;
+}
+
+interface Processor {
+  id: number;
+  currentLoad: number;
+  taskFrequency: number;
+  tasks: Task[];
+}
+
+interface SimulationStats {
+  totalQueries: number;
+  totalMigrations: number;
+  averageLoad: number;
+  loadDeviation: number;
+  strategy: number;
+}
+
+interface SimulationConfig {
+  numProcessors: number;
+  thresholdP: number;
+  thresholdR: number;
+  maxTries: number;
+  simulationSpeed: number;
+  tasksPerCycle: number;
+}
+
+function App() {
+  const [processors, setProcessors] = useState<Processor[]>([]);
+  const [isRunning, setIsRunning] = useState(false);
+  const [currentStrategy, setCurrentStrategy] = useState(1);
+  const [stats, setStats] = useState<SimulationStats[]>([]);
+  const [currentStats, setCurrentStats] = useState<SimulationStats>({
+    totalQueries: 0,
+    totalMigrations: 0,
+    averageLoad: 0,
+    loadDeviation: 0,
+    strategy: 1
+  });
+  const [config, setConfig] = useState<SimulationConfig>({
+    numProcessors: 75,
+    thresholdP: 0.8,
+    thresholdR: 0.3,
+    maxTries: 5,
+    simulationSpeed: 100,
+    tasksPerCycle: 10
+  });
+  const [showConfig, setShowConfig] = useState(false);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const taskIdCounter = useRef(0);
+
+  useEffect(() => {
+    initializeProcessors();
+  }, [config.numProcessors]);
+
+  const initializeProcessors = () => {
+    const newProcessors: Processor[] = [];
+    for (let i = 0; i < config.numProcessors; i++) {
+      newProcessors.push({
+        id: i,
+        currentLoad: Math.random() * 0.4, // Start with random load 0-40%
+        taskFrequency: 0.5 + Math.random() * 1.5, // Random frequency 0.5-2.0
+        tasks: []
+      });
+    }
+    setProcessors(newProcessors);
+  };
+
+  const generateTask = (processorId: number): Task => {
+    taskIdCounter.current++;
+    return {
+      id: taskIdCounter.current,
+      processorRequirement: 0.01 + Math.random() * 0.05, // 1-6% CPU requirement
+      originalProcessor: processorId
+    };
+  };
+
+  const strategy1 = (processors: Processor[], task: Task, originId: number): { newProcessors: Processor[], queries: number, migrations: number } => {
+    let queries = 0;
+    let migrations = 0;
+    const newProcessors = [...processors];
+    
+    for (let attempt = 0; attempt < config.maxTries; attempt++) {
+      const randomId = Math.floor(Math.random() * processors.length);
+      queries++;
+      
+      if (newProcessors[randomId].currentLoad < config.thresholdP) {
+        // Migrate task to random processor
+        newProcessors[randomId].currentLoad += task.processorRequirement;
+        newProcessors[randomId].tasks.push(task);
+        migrations++;
+        return { newProcessors, queries, migrations };
+      }
+    }
+    
+    // Execute on original processor
+    newProcessors[originId].currentLoad += task.processorRequirement;
+    newProcessors[originId].tasks.push(task);
+    return { newProcessors, queries, migrations };
+  };
+
+  const strategy2 = (processors: Processor[], task: Task, originId: number): { newProcessors: Processor[], queries: number, migrations: number } => {
+    let queries = 0;
+    let migrations = 0;
+    const newProcessors = [...processors];
+    
+    if (newProcessors[originId].currentLoad > config.thresholdP) {
+      // Find processor with load < p
+      let found = false;
+      while (!found) {
+        const randomId = Math.floor(Math.random() * processors.length);
+        queries++;
+        
+        if (newProcessors[randomId].currentLoad < config.thresholdP) {
+          newProcessors[randomId].currentLoad += task.processorRequirement;
+          newProcessors[randomId].tasks.push(task);
+          migrations++;
+          found = true;
+        }
+      }
+    } else {
+      // Execute on original processor
+      newProcessors[originId].currentLoad += task.processorRequirement;
+      newProcessors[originId].tasks.push(task);
+    }
+    
+    return { newProcessors, queries, migrations };
+  };
+
+  const strategy3 = (processors: Processor[], task: Task, originId: number): { newProcessors: Processor[], queries: number, migrations: number } => {
+    let queries = 0;
+    let migrations = 0;
+    const newProcessors = [...processors];
+    
+    // First, apply strategy 2 logic
+    const result = strategy2(newProcessors, task, originId);
+    queries += result.queries;
+    migrations += result.migrations;
+    
+    // Additional logic: processors with load < r try to steal tasks
+    for (let i = 0; i < newProcessors.length; i++) {
+      if (newProcessors[i].currentLoad < config.thresholdR) {
+        const randomId = Math.floor(Math.random() * processors.length);
+        queries++;
+        
+        if (newProcessors[randomId].currentLoad > config.thresholdP && newProcessors[randomId].tasks.length > 0) {
+          // Steal a task
+          const stolenTask = newProcessors[randomId].tasks.pop()!;
+          newProcessors[randomId].currentLoad -= stolenTask.processorRequirement;
+          newProcessors[i].currentLoad += stolenTask.processorRequirement;
+          newProcessors[i].tasks.push(stolenTask);
+          migrations++;
+        }
+      }
+    }
+    
+    return { newProcessors: result.newProcessors, queries, migrations };
+  };
+
+  const runSimulationStep = () => {
+    setProcessors(prevProcessors => {
+      const newProcessors = [...prevProcessors];
+      let totalQueries = 0;
+      let totalMigrations = 0;
+      
+      // Decay existing loads slightly (tasks completing)
+      newProcessors.forEach(processor => {
+        processor.currentLoad = Math.max(0, processor.currentLoad - 0.005);
+        processor.tasks = processor.tasks.filter(() => Math.random() > 0.1); // 10% chance task completes
+      });
+      
+      // Generate new tasks
+      for (let i = 0; i < config.tasksPerCycle; i++) {
+        const processorId = Math.floor(Math.random() * newProcessors.length);
+        const task = generateTask(processorId);
+        
+        let result;
+        switch (currentStrategy) {
+          case 1:
+            result = strategy1(newProcessors, task, processorId);
+            break;
+          case 2:
+            result = strategy2(newProcessors, task, processorId);
+            break;
+          case 3:
+            result = strategy3(newProcessors, task, processorId);
+            break;
+          default:
+            result = strategy1(newProcessors, task, processorId);
+        }
+        
+        Object.assign(newProcessors, result.newProcessors);
+        totalQueries += result.queries;
+        totalMigrations += result.migrations;
+      }
+      
+      // Calculate statistics
+      const averageLoad = newProcessors.reduce((sum, p) => sum + p.currentLoad, 0) / newProcessors.length;
+      const loadDeviation = Math.sqrt(
+        newProcessors.reduce((sum, p) => sum + Math.pow(p.currentLoad - averageLoad, 2), 0) / newProcessors.length
+      );
+      
+      setCurrentStats(prev => ({
+        totalQueries: prev.totalQueries + totalQueries,
+        totalMigrations: prev.totalMigrations + totalMigrations,
+        averageLoad,
+        loadDeviation,
+        strategy: currentStrategy
+      }));
+      
+      return newProcessors;
+    });
+  };
+
+  const startSimulation = () => {
+    if (!isRunning) {
+      setIsRunning(true);
+      intervalRef.current = setInterval(runSimulationStep, config.simulationSpeed);
+    }
+  };
+
+  const stopSimulation = () => {
+    setIsRunning(false);
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  };
+
+  const resetSimulation = () => {
+    stopSimulation();
+    setStats(prev => [...prev, currentStats]);
+    setCurrentStats({
+      totalQueries: 0,
+      totalMigrations: 0,
+      averageLoad: 0,
+      loadDeviation: 0,
+      strategy: currentStrategy
+    });
+    initializeProcessors();
+  };
+
+  const getLoadColor = (load: number) => {
+    if (load < config.thresholdR) return 'bg-green-500';
+    if (load < config.thresholdP) return 'bg-yellow-500';
+    return 'bg-red-500';
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white">
+      <div className="container mx-auto px-6 py-8">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+            Distributed Load Balancing Simulator
+          </h1>
+          <p className="text-gray-300">
+            Simulating three different load balancing strategies across {config.numProcessors} processors
+          </p>
+        </div>
+
+        {/* Control Panel */}
+        <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 mb-8 border border-gray-700">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={isRunning ? stopSimulation : startSimulation}
+                className={`flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition-all duration-200 ${
+                  isRunning 
+                    ? 'bg-red-600 hover:bg-red-700 text-white' 
+                    : 'bg-green-600 hover:bg-green-700 text-white'
+                }`}
+              >
+                {isRunning ? <Pause size={20} /> : <Play size={20} />}
+                {isRunning ? 'Pause' : 'Start'}
+              </button>
+              
+              <button
+                onClick={resetSimulation}
+                className="flex items-center gap-2 px-6 py-3 rounded-xl font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-all duration-200"
+              >
+                <RotateCcw size={20} />
+                Reset
+              </button>
+              
+              <button
+                onClick={() => setShowConfig(!showConfig)}
+                className="flex items-center gap-2 px-6 py-3 rounded-xl font-semibold bg-purple-600 hover:bg-purple-700 text-white transition-all duration-200"
+              >
+                <Settings size={20} />
+                Config
+              </button>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <label className="text-gray-300">Strategy:</label>
+              <select
+                value={currentStrategy}
+                onChange={(e) => setCurrentStrategy(Number(e.target.value))}
+                className="bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={isRunning}
+              >
+                <option value={1}>Strategy 1: Random Query with Retry</option>
+                <option value={2}>Strategy 2: Threshold-based Migration</option>
+                <option value={3}>Strategy 3: Load Stealing</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Configuration Panel */}
+          {showConfig && (
+            <div className="mt-6 pt-6 border-t border-gray-700">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                <div>
+                  <label className="block text-sm text-gray-300 mb-2">Processors (N)</label>
+                  <input
+                    type="number"
+                    value={config.numProcessors}
+                    onChange={(e) => setConfig(prev => ({ ...prev, numProcessors: Number(e.target.value) }))}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    min="10"
+                    max="200"
+                    disabled={isRunning}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-300 mb-2">Threshold P</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={config.thresholdP}
+                    onChange={(e) => setConfig(prev => ({ ...prev, thresholdP: Number(e.target.value) }))}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    min="0.1"
+                    max="1.0"
+                    disabled={isRunning}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-300 mb-2">Threshold R</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={config.thresholdR}
+                    onChange={(e) => setConfig(prev => ({ ...prev, thresholdR: Number(e.target.value) }))}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    min="0.1"
+                    max="1.0"
+                    disabled={isRunning}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-300 mb-2">Max Tries (Z)</label>
+                  <input
+                    type="number"
+                    value={config.maxTries}
+                    onChange={(e) => setConfig(prev => ({ ...prev, maxTries: Number(e.target.value) }))}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    min="1"
+                    max="20"
+                    disabled={isRunning}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-300 mb-2">Speed (ms)</label>
+                  <input
+                    type="number"
+                    value={config.simulationSpeed}
+                    onChange={(e) => setConfig(prev => ({ ...prev, simulationSpeed: Number(e.target.value) }))}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    min="10"
+                    max="1000"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-300 mb-2">Tasks/Cycle</label>
+                  <input
+                    type="number"
+                    value={config.tasksPerCycle}
+                    onChange={(e) => setConfig(prev => ({ ...prev, tasksPerCycle: Number(e.target.value) }))}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    min="1"
+                    max="50"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Statistics Panel */}
+        <div className="grid md:grid-cols-4 gap-6 mb-8">
+          <div className="bg-gradient-to-br from-blue-600/20 to-blue-800/20 backdrop-blur-sm rounded-2xl p-6 border border-blue-500/30">
+            <div className="flex items-center gap-3 mb-2">
+              <Cpu className="text-blue-400" size={24} />
+              <h3 className="text-lg font-semibold text-blue-100">Average Load</h3>
+            </div>
+            <p className="text-3xl font-bold text-blue-400">
+              {(currentStats.averageLoad * 100).toFixed(1)}%
+            </p>
+          </div>
+
+          <div className="bg-gradient-to-br from-purple-600/20 to-purple-800/20 backdrop-blur-sm rounded-2xl p-6 border border-purple-500/30">
+            <div className="flex items-center gap-3 mb-2">
+              <BarChart3 className="text-purple-400" size={24} />
+              <h3 className="text-lg font-semibold text-purple-100">Load Deviation</h3>
+            </div>
+            <p className="text-3xl font-bold text-purple-400">
+              {(currentStats.loadDeviation * 100).toFixed(2)}%
+            </p>
+          </div>
+
+          <div className="bg-gradient-to-br from-green-600/20 to-green-800/20 backdrop-blur-sm rounded-2xl p-6 border border-green-500/30">
+            <div className="flex items-center gap-3 mb-2">
+              <Network className="text-green-400" size={24} />
+              <h3 className="text-lg font-semibold text-green-100">Load Queries</h3>
+            </div>
+            <p className="text-3xl font-bold text-green-400">
+              {currentStats.totalQueries.toLocaleString()}
+            </p>
+          </div>
+
+          <div className="bg-gradient-to-br from-orange-600/20 to-orange-800/20 backdrop-blur-sm rounded-2xl p-6 border border-orange-500/30">
+            <div className="flex items-center gap-3 mb-2">
+              <RotateCcw className="text-orange-400" size={24} />
+              <h3 className="text-lg font-semibold text-orange-100">Migrations</h3>
+            </div>
+            <p className="text-3xl font-bold text-orange-400">
+              {currentStats.totalMigrations.toLocaleString()}
+            </p>
+          </div>
+        </div>
+
+        {/* Processor Grid */}
+        <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 mb-8 border border-gray-700">
+          <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
+            <Cpu size={24} />
+            Processor Load Visualization
+          </h3>
+          <div className="grid grid-cols-8 md:grid-cols-12 lg:grid-cols-16 xl:grid-cols-20 gap-2">
+            {processors.map((processor) => (
+              <div
+                key={processor.id}
+                className="relative group"
+                title={`Processor ${processor.id}: ${(processor.currentLoad * 100).toFixed(1)}% load`}
+              >
+                <div className="w-12 h-12 rounded-lg border-2 border-gray-600 overflow-hidden bg-gray-700">
+                  <div
+                    className={`h-full transition-all duration-300 ${getLoadColor(processor.currentLoad)}`}
+                    style={{ height: `${Math.min(processor.currentLoad * 100, 100)}%` }}
+                  />
+                </div>
+                <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-900 text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
+                  {processor.id}: {(processor.currentLoad * 100).toFixed(1)}%
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-center gap-6 mt-4 text-sm">
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-green-500 rounded"></div>
+              <span>Low Load (&lt; {(config.thresholdR * 100).toFixed(0)}%)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-yellow-500 rounded"></div>
+              <span>Medium Load ({(config.thresholdR * 100).toFixed(0)}% - {(config.thresholdP * 100).toFixed(0)}%)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-red-500 rounded"></div>
+              <span>High Load (&gt; {(config.thresholdP * 100).toFixed(0)}%)</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Historical Results */}
+        {stats.length > 0 && (
+          <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700">
+            <h3 className="text-xl font-semibold mb-4">Historical Results</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-600">
+                    <th className="text-left py-2">Strategy</th>
+                    <th className="text-left py-2">Avg Load</th>
+                    <th className="text-left py-2">Load Deviation</th>
+                    <th className="text-left py-2">Total Queries</th>
+                    <th className="text-left py-2">Total Migrations</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.map((stat, index) => (
+                    <tr key={index} className="border-b border-gray-700/50">
+                      <td className="py-2">Strategy {stat.strategy}</td>
+                      <td className="py-2">{(stat.averageLoad * 100).toFixed(1)}%</td>
+                      <td className="py-2">{(stat.loadDeviation * 100).toFixed(2)}%</td>
+                      <td className="py-2">{stat.totalQueries.toLocaleString()}</td>
+                      <td className="py-2">{stat.totalMigrations.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;
