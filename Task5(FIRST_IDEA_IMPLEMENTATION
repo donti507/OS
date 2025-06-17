@@ -1,0 +1,243 @@
+import random
+import statistics
+from typing import List, Dict
+from dataclasses import dataclass
+from enum import Enum
+
+
+class StrategyType(Enum):
+    STRATEGY_1 = 1
+    STRATEGY_2 = 2
+    STRATEGY_3 = 3
+@dataclass
+class Task:
+    id: int
+    power_requirement: float
+    duration: int
+
+class Processor:
+    def __init__(self, processor_id: int, task_frequency: float):
+        self.id = processor_id
+        self.current_load = 0.0
+        self.task_frequency = task_frequency
+        self.active_tasks: List[Task] = []
+        self.completed_tasks = 0
+
+    def add_task(self, task: Task) -> bool:
+        if self.current_load + task.power_requirement <= 100.0:
+            self.active_tasks.append(task)
+            self.current_load += task.power_requirement
+            return True
+        return False
+
+    def remove_task(self, task: Task):
+        if task in self.active_tasks:
+            self.active_tasks.remove(task)
+            self.current_load -= task.power_requirement
+            self.completed_tasks += 1
+
+    def update_tasks(self):
+        completed = []
+        for task in self.active_tasks:
+            task.duration -= 1
+            if task.duration <= 0:
+                completed.append(task)
+
+        for task in completed:
+            self.remove_task(task)
+
+    def get_transferable_task(self) -> Task:
+        if self.active_tasks:
+            return random.choice(self.active_tasks)
+        return None
+
+
+class LoadBalancingSimulator:
+    def __init__(self, num_processors: int = 75, threshold_p: float = 90.0,
+                 min_threshold_r: float = 20.0, max_attempts_z: int = 5):
+        self.num_processors = num_processors
+        self.threshold_p = threshold_p
+        self.min_threshold_r = min_threshold_r
+        self.max_attempts_z = max_attempts_z
+
+        # just setting range like task frequencies
+        self.processors: List[Processor] = []
+        for i in range(num_processors):
+            frequency = random.uniform(0.1, 2.0)
+            self.processors.append(Processor(i, frequency))
+        self.reset_statistics()
+
+    def reset_statistics(self):
+        self.load_queries = 0
+        self.process_migrations = 0
+        self.load_history: List[float] = []
+        self.max_load_history: List[float] = []
+        self.time_step = 0
+        self.task_counter = 0
+
+    def generate_task(self, processor_id: int) -> Task:
+        self.task_counter += 1
+        power_req = random.uniform(1.0, 15.0)
+        duration = random.randint(5, 20)
+        return Task(self.task_counter, power_req, duration)
+
+    def query_processor_load(self, processor_id: int) -> float:
+        self.load_queries += 1
+        return self.processors[processor_id].current_load
+
+    def migrate_task(self, task: Task, from_processor: int, to_processor: int) -> bool:
+        from_proc = self.processors[from_processor]
+        to_proc = self.processors[to_processor]
+
+        if task in from_proc.active_tasks and to_proc.add_task(task):
+            from_proc.active_tasks.remove(task)
+            from_proc.current_load -= task.power_requirement
+            self.process_migrations += 1
+            return True
+        return False
+
+    def strategy_1(self, processor_id: int, task: Task) -> bool:
+        processor = self.processors[processor_id]
+
+        for attempt in range(self.max_attempts_z):
+            target_id = random.randint(0, self.num_processors - 1)
+            if target_id == processor_id:
+                continue
+
+            target_load = self.query_processor_load(target_id)
+
+            if target_load < self.threshold_p:
+                if self.processors[target_id].add_task(task):
+                    self.process_migrations += 1
+                    return True
+
+        return processor.add_task(task)
+
+    def strategy_2(self, processor_id: int, task: Task) -> bool:
+        processor = self.processors[processor_id]
+
+
+        if processor.current_load > self.threshold_p:
+            attempts = 0
+            max_search_attempts = self.num_processors * 2
+
+            while attempts < max_search_attempts:
+                target_id = random.randint(0, self.num_processors - 1)
+                if target_id == processor_id:
+                    continue
+
+                target_load = self.query_processor_load(target_id)
+                attempts += 1
+                if target_load < self.threshold_p:
+                    if self.processors[target_id].add_task(task):
+                        self.process_migrations += 1
+                        return True
+
+            return processor.add_task(task)
+        else:
+            return processor.add_task(task)
+
+    def strategy_3(self, processor_id: int, task: Task) -> bool:
+        processor = self.processors[processor_id]
+        result = self.strategy_2(processor_id, task)
+
+        if processor.current_load < self.min_threshold_r:
+            self.attempt_task_stealing(processor_id)
+
+        return result
+
+    def attempt_task_stealing(self, processor_id: int):
+        processor = self.processors[processor_id]
+
+        for _ in range(5):
+            target_id = random.randint(0, self.num_processors - 1)
+            if target_id == processor_id:
+                continue
+
+            target_load = self.query_processor_load(target_id)
+
+            if target_load > self.threshold_p:
+                target_processor = self.processors[target_id]
+                transferable_task = target_processor.get_transferable_task()
+
+                if transferable_task and processor.current_load + transferable_task.power_requirement <= 100.0:
+                    self.migrate_task(transferable_task, target_id, processor_id)
+                    break
+
+
+
+
+
+    def simulate_time_step(self, strategy: StrategyType):
+        for processor in self.processors:
+            processor.update_tasks()
+
+        # new tasks
+        for processor in self.processors:
+            if random.random() < processor.task_frequency:
+                task = self.generate_task(processor.id)
+
+                if strategy == StrategyType.STRATEGY_1:
+                    self.strategy_1(processor.id, task)
+                elif strategy == StrategyType.STRATEGY_2:
+                    self.strategy_2(processor.id, task)
+                elif strategy == StrategyType.STRATEGY_3:
+                    self.strategy_3(processor.id, task)
+
+
+        loads = [p.current_load for p in self.processors]
+        avg_load = sum(loads) / self.num_processors
+        max_load = max(loads)
+
+        self.load_history.append(avg_load)
+        self.max_load_history.append(max_load)
+        self.time_step += 1
+
+    def run_simulation(self, strategy: StrategyType, duration: int = 1000) -> Dict:
+        self.reset_statistics()
+        for step in range(duration):
+            self.simulate_time_step(strategy)
+
+
+        avg_load = statistics.mean(self.load_history)
+        load_deviation = statistics.stdev(self.load_history) if len(self.load_history) > 1 else 0
+        max_load = max(self.max_load_history) if self.max_load_history else 0
+
+        results = {
+            'strategy': strategy.name,
+            'average_cpu_load': avg_load,
+            'load_deviation': load_deviation,
+            'max_cpu_load': max_load,
+            'load_queries': self.load_queries,
+            'process_migrations': self.process_migrations,
+            'total_tasks_completed': sum(p.completed_tasks for p in self.processors),
+            'active_tasks_remaining': sum(len(p.active_tasks) for p in self.processors)
+        }
+        return results
+
+
+def main():
+    simulator = LoadBalancingSimulator(
+        num_processors=75,
+        threshold_p=70.0,
+        min_threshold_r=20.0,
+        max_attempts_z=5)
+    results = []
+    for strategy in [StrategyType.STRATEGY_1, StrategyType.STRATEGY_2, StrategyType.STRATEGY_3]:
+        result = simulator.run_simulation(strategy, 1000)
+        results.append(result)
+    print("\nresult")
+    print( f"{'strategy':<12} {'avg Load':<10} {'load Dev':<10} {'max Load':<10} {'queries':<10} {'migrations':<12} {'completed':<10} {'remain':<10}")
+    for result in results:
+        print(f"{result['strategy']:<12} "
+              f"{result['average_cpu_load']:<10.2f} "
+              f"{result['load_deviation']:<10.2f} "
+              f"{result['max_cpu_load']:<10.2f} "
+              f"{result['load_queries']:<10} "
+              f"{result['process_migrations']:<12} "
+              f"{result['total_tasks_completed']:<10} "
+              f"{result['active_tasks_remaining']:<10}")
+
+
+if __name__ == "__main__":
+    main()
